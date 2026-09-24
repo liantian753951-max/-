@@ -147,8 +147,12 @@ def build(source, manifest, output, template):
         parts[f'xl/media/{name}']=(out/name).read_bytes()
         thumb=ImageOps.contain(crop,(280,300)); x=(i%3)*300; y=(i//3)*340
         contact.paste(thumb,(x+(300-thumb.width)//2,y+25)); pen.text((x+12,y+7),str(i+1),fill='black')
-        height=float(row.get('ht','264.75'))*4/3; width=495
-        factor=min((width-20)/crop.width,(height-20)/crop.height)
+        height=float(row.get('ht','264.75'))*4/3
+        column=next(c for c in root.find(tag(S,'cols')) if int(c.get('min'))<=4<=int(c.get('max')))
+        # OOXML column width is character-based, not the renderer's pixel width.
+        # Reserve generous padding for Excel/WPS font-metric differences.
+        width=int(float(column.get('width'))*7+5)
+        factor=min((width-48)/crop.width,(height-32)/crop.height)
         w,h=round(crop.width*factor),round(crop.height*factor)
         anchor=E.SubElement(drawing,tag(D,'oneCellAnchor'))
         fr=E.SubElement(anchor,tag(D,'from'))
@@ -188,6 +192,10 @@ def build(source, manifest, output, template):
         saved=E.fromstring(z.read('xl/worksheets/sheet1.xml'))
         assert len([n for n in z.namelist() if n.startswith('xl/media/')])==len(items)
         assert len(list(saved.iter(tag(S,'f'))))==len(items)+1, 'Missing calculation formula'
+        for anchor in E.fromstring(z.read('xl/drawings/quote.xml')):
+            fr=anchor.find(tag(D,'from')); extent=anchor.find(tag(D,'ext'))
+            assert int(fr.find(tag(D,'col')).text)==3
+            assert int(fr.find(tag(D,'colOff')).text)+int(extent.get('cx'))<=int((width-20)*9525), 'Image exceeds column'
         for c in saved.iter(tag(S,'c')):
             m=re.fullmatch(r'([A-Z]+)(\d+)',c.get('r','')); col,n=m[1],int(m[2])
             if (5<=n<last and col in ('G','K','L')) or (5<=n<last and col=='J' and deadline is None):

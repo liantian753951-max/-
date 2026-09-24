@@ -6,7 +6,7 @@
 
 - Codex 负责识别项目名称、物件名称和图片位置。
 - Python 固定程序负责裁图、套用缓存模板、嵌入图片与校验。
-- Google Drive 连接器负责导入 Google Sheets。
+- 默认只生成本地 XLSX 并保存桌面；仅在明确要求时使用 Google Drive 连接器导入 Google Sheets。
 - 天数留空；每项金额自动等于单价×天数，底部自动求和。开始日期为生成当天，截止日期从附图识别。
 
 这不是独立客户端，不包含独立 OCR 服务、API Key 或 Google 登录凭据。
@@ -28,7 +28,7 @@ python skills/quote-image-to-sheet/scripts/build_quote.py build image.jpg input.
 python skills/quote-image-to-sheet/scripts/save_desktop.py output/result.json
 ```
 
-第二条命令仅用于 Windows。Google Sheets 导入由 Codex 内已连接的 Google Drive 完成。
+第二条命令仅用于 Windows，本地生成无需 Google 登录。可选的 Google Sheets 导入由 Codex 内已连接的 Google Drive 完成。
 
 ## 文件
 
@@ -43,3 +43,7 @@ python skills/quote-image-to-sheet/scripts/save_desktop.py output/result.json
 ## 日期与计算
 
 输入 JSON 可加入 `deadline`（ISO 日期）。未提供时提交日期留空。生成日期固定为本地当天。天数为空时金额显示空白，填写后自动计算，支持小数天数。日期统一显示为 yyyy-mm-dd。
+
+## 图片布局
+
+制作图按模板图片栏的实际宽度和行高等比例缩放、居中并留白，生成时检查图片不超出边框。
