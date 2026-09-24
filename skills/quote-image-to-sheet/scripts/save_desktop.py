@@ -12,7 +12,7 @@ def save(result_file):
     result=json.loads(record.read_text(encoding='utf-8-sig'))
     source=Path(result['xlsx']); payload=source.read_bytes()
     digest=hashlib.sha256(payload).hexdigest()
-    if digest!=result['sha256'] or not result.get('money_and_time_blank'):
+    if digest!=result['sha256'] or not (result.get('verified') or result.get('money_and_time_blank')):
         raise ValueError('Quote changed after verification; verify it again before saving')
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER,r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders') as key:
         desktop=Path(os.path.expandvars(winreg.QueryValueEx(key,'Desktop')[0]))

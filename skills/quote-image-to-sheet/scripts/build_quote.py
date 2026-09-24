@@ -11,6 +11,7 @@ import json
 import re
 import time
 import zipfile
+from datetime import date
 from pathlib import Path
 from xml.etree import ElementTree as E
 from PIL import Image, ImageOps, ImageDraw
@@ -24,7 +25,10 @@ C = 'http://schemas.openxmlformats.org/package/2006/content-types'
 E.register_namespace('', S)
 E.register_namespace('r', R)
 def tag(ns, name): return '{'+ns+'}'+name
-def xml(node): return E.tostring(node, encoding='utf-8', xml_declaration=True)
+def xml(node):
+    # OPC readers require unprefixed package relationship/content-type roots.
+    E.register_namespace('',node.tag.split('}')[0][1:])
+    return E.tostring(node, encoding='utf-8', xml_declaration=True)
 def cell(row, col):
     ref = col+row.get('r')
     for c in row.findall(tag(S,'c')):
@@ -43,6 +47,28 @@ def renumber(row,n):
     row.set('r',str(n))
     for c in row.findall(tag(S,'c')): c.set('r',re.sub(r'\d+$',str(n),c.get('r')))
     return row
+
+def formula(c, expression):
+    put(c)
+    c.set('t','str')
+    E.SubElement(c,tag(S,'f')).text=expression
+    E.SubElement(c,tag(S,'v')).text=''
+
+def date_style(parts):
+    styles=E.fromstring(parts['xl/styles.xml'])
+    formats=styles.find(tag(S,'numFmts'))
+    if formats is None:
+        formats=E.Element(tag(S,'numFmts')); styles.insert(0,formats)
+    fmt=max([163]+[int(x.get('numFmtId')) for x in formats])+1
+    E.SubElement(formats,tag(S,'numFmt'),{'numFmtId':str(fmt),'formatCode':'yyyy-mm-dd'})
+    formats.set('count',str(len(formats)))
+    xfs=styles.find(tag(S,'cellXfs'))
+    sheet=E.fromstring(parts['xl/worksheets/sheet1.xml'])
+    original=sheet.find(".//"+tag(S,'c')+"[@r='I5']")
+    xf=copy.deepcopy(xfs[int(original.get('s','0'))]); xf.set('numFmtId',str(fmt)); xf.set('applyNumberFormat','1')
+    index=len(xfs); xfs.append(xf); xfs.set('count',str(len(xfs)))
+    parts['xl/styles.xml']=xml(styles)
+    return str(index)
 
 def clean_template(source, destination):
     """Keep format and daily rate, remove previous project data and all images."""
@@ -77,6 +103,8 @@ def clean_template(source, destination):
 def build(source, manifest, output, template):
     start=time.perf_counter()
     spec=json.loads(Path(manifest).read_text(encoding='utf-8-sig'))
+    generated=date.today()
+    deadline=date.fromisoformat(spec['deadline']) if spec.get('deadline') else None
     items=spec['items']; project=spec['project'].strip(); supplier=spec['supplier'].strip()
     if not project or not supplier or not 1<=len(items)<=100: raise ValueError('Missing project/supplier or invalid item count')
     if spec.get('expected_count',len(items))!=len(items): raise ValueError('Item count mismatch')
@@ -90,6 +118,12 @@ def build(source, manifest, output, template):
         crops.append(im.crop((x1,y1,x2,y2)))
     out=Path(output); out.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(template) as z: parts={n:z.read(n) for n in z.namelist()}
+    ds=date_style(parts)
+    book=E.fromstring(parts['xl/workbook.xml'])
+    calc=book.find(tag(S,'calcPr'))
+    if calc is None: calc=E.SubElement(book,tag(S,'calcPr'))
+    calc.set('calcMode','auto'); calc.set('fullCalcOnLoad','1')
+    parts['xl/workbook.xml']=xml(book)
     root=E.fromstring(parts['xl/worksheets/sheet1.xml']); data=root.find(tag(S,'sheetData'))
     old={int(r.get('r')):r for r in data}
     if root.find(tag(S,'drawing')) is not None: raise ValueError('Use a sanitized template')
@@ -104,6 +138,11 @@ def build(source, manifest, output, template):
         for c in row:
             if not c.get('r','').startswith('F'): put(c)
         put(cell(row,'B'),i+1); put(cell(row,'E'),item['name']); data.append(row)
+        n=i+5
+        formula(cell(row,'H'),f'IF(COUNT(F{n}:G{n})<2,"",F{n}*G{n})')
+        put(cell(row,'I'),(generated-date(1899,12,30)).days); cell(row,'I').set('s',ds)
+        cell(row,'J').set('s',ds)
+        if deadline: put(cell(row,'J'),(deadline-date(1899,12,30)).days)
         name=f'item-{i+1:02}.png'; crop.save(out/name)
         parts[f'xl/media/{name}']=(out/name).read_bytes()
         thumb=ImageOps.contain(crop,(280,300)); x=(i%3)*300; y=(i//3)*340
@@ -128,6 +167,7 @@ def build(source, manifest, output, template):
     last=len(items)+5; renumber(total,last)
     for c in total: put(c)
     put(cell(total,'G'),'总价'); data.append(total)
+    formula(cell(total,'H'),f'IF(COUNT(G5:G{last-1})=0,"",SUM(H5:H{last-1}))')
     dim=root.find(tag(S,'dimension'))
     if dim is not None: dim.set('ref',f'A1:L{last}')
     E.SubElement(root,tag(S,'drawing'),{tag(R,'id'):'rIdQuote'})
@@ -147,12 +187,13 @@ def build(source, manifest, output, template):
     with zipfile.ZipFile(result) as z:
         saved=E.fromstring(z.read('xl/worksheets/sheet1.xml'))
         assert len([n for n in z.namelist() if n.startswith('xl/media/')])==len(items)
-        assert not list(saved.iter(tag(S,'f'))), 'Unexpected formula survived'
+        assert len(list(saved.iter(tag(S,'f'))))==len(items)+1, 'Missing calculation formula'
         for c in saved.iter(tag(S,'c')):
             m=re.fullmatch(r'([A-Z]+)(\d+)',c.get('r','')); col,n=m[1],int(m[2])
-            if (5<=n<last and col in ('G','H','I','J','K','L')) or (n==last and col=='H'):
+            if (5<=n<last and col in ('G','K','L')) or (5<=n<last and col=='J' and deadline is None):
                 assert len(c)==0, 'Expected blank: '+c.get('r')
-    report={'title':project+'报价表','count':len(items),'embedded_images':len(items),'money_and_time_blank':True,
+    report={'title':project+'报价表','count':len(items),'embedded_images':len(items),'verified':True,'days_blank':True,
+            'start_date':generated.isoformat(),'deadline':deadline.isoformat() if deadline else None,
             'xlsx':str(result.resolve()),'contact_sheet':str((out/'contact-sheet.png').resolve()),
             'sha256':hashlib.sha256(result.read_bytes()).hexdigest(),'elapsed_seconds':round(time.perf_counter()-start,3)}
     (out/'result.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
